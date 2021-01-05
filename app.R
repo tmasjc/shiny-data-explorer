@@ -1,43 +1,83 @@
-library(magrittr)
-library(shiny)
-library(readr)
-library(skimr)
+require(shiny)
+library(shinythemes)
+require(magrittr)
+require(readr)
+require(skimr)
+require(purrr)
+require(glue)
+require(rlang)
+
 
 ui <- fluidPage(
+    
+    theme = shinytheme("cosmo"),
 
-    # Application title
     titlePanel("Shiny Data Explorer"),
 
     sidebarLayout(
         sidebarPanel(
-            # to upload files
             fileInput("file", "Choose CSV File", accept = ".csv"),
-            checkboxInput("header", label = "Header", value = 1),
-            actionButton("go", label = "Run")
-
+            actionButton("upload", "Run / Reset", width = "100%"),
+            tags$hr(),
+            uiOutput("renderColumns")
         ),
         mainPanel(
-            # to display summary
-            verbatimTextOutput("out", placeholder = FALSE)
+            actionButton("update", "Init / Refresh Columns", width = "40%"),
+            tags$hr(),
+            verbatimTextOutput("summary")
         )
     )
 )
 
 server <- function(input, output) {
     
-    # create a dataframe react to event 'button'
-    df <- eventReactive(input$go, {
+    dat <- eventReactive(input$upload, {
         uploadedFile <- input$file
-        read_csv(uploadedFile$datapath, col_names = input$header)
+        req(uploadedFile)
+        read_csv(uploadedFile$datapath, col_names = TRUE)
     })
     
-    output$out <- renderPrint({
+    colnames <- reactive({ names(dat()) })
+    coltypes <- reactive({ map_chr(dat(), class) })
+    
+    # modify data frame columns to specified types
+    df <- eventReactive(input$update, {
         
-        # skim through data
-        skimr::skim(df())
+        dd <- dat()
+        
+        # form expressions in modifying dataframe,
+        # based on input${id}
+        exprs <- map_chr(colnames(), ~ {
+            .in  <- paste0("input$", .x)
+            type <- eval(parse_expr(.in))
+            glue("dd$`{.x}` <- as.{type}(dd[['{.x}']])")
+        })
+        
+        # since we're in `purrr`, we have to go back 1 more gen
+        map(exprs, ~ eval(parse_expr(.x), envir = parent.frame(2)))
+        
+        return(dd)
         
     })
     
+    output$renderColumns <- renderUI({
+        
+        # form dynamic ui expressions here 
+        exprs <- 
+            map2_chr(colnames(), coltypes(), 
+                    ~ glue(
+                    'selectInput("{.x}", "{.x}", 
+                    choices = c("character", "numeric", "Date"), 
+                    selected = "{.y}")')
+                )
+        
+        # evaluate expressions
+        map(exprs, ~ eval(parse_expr(.x)))
+    })
+    
+    output$summary <- renderPrint({
+        skimr::skim_without_charts(df())
+    })
 }
 
 shinyApp(ui = ui, server = server)
